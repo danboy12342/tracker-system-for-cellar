@@ -1,0 +1,6 @@
+{
+  "name": "Nappy Inventory Tracker",
+  "description": "A high-contrast, mobile-first inventory tracker for nappy stock, designed for easy one-handed use in low-light environments.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
