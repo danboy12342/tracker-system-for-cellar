@@ -5,18 +5,27 @@
 
 import { useState, useEffect } from 'react';
 import { NappyType } from './types';
-import { Plus, Minus, PackagePlus, Trash2, PlusCircle, X, AlertTriangle, Download, Upload } from 'lucide-react';
+import { Plus, Minus, PackagePlus, Trash2, PlusCircle, X, AlertTriangle, Download, Upload, LogOut } from 'lucide-react';
+import { db, auth } from './lib/firebase';
+import { onAuthStateChanged, User, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
+import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, query, where, serverTimestamp } from 'firebase/firestore';
+
+enum OperationType { CREATE = 'create', UPDATE = 'update', DELETE = 'delete', LIST = 'list', GET = 'get', WRITE = 'write' }
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: { userId: auth.currentUser?.uid, email: auth.currentUser?.email },
+    operationType, path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  // In UI, we just log it. Throwing crashes React unless caught.
+}
 
 export default function App() {
-  const [inventory, setInventory] = useState<NappyType[]>(() => {
-    try {
-      const saved = localStorage.getItem('nappy-inventory');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.error("Failed to load inventory:", e);
-    }
-    return [];
-  });
+  const [user, setUser] = useState<User | null>(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+
+  const [inventory, setInventory] = useState<NappyType[]>([]);
 
   const [isAdding, setIsAdding] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<NappyType | null>(null);
@@ -28,55 +37,98 @@ export default function App() {
   const [newThreshold, setNewThreshold] = useState('10');
 
   useEffect(() => {
-    localStorage.setItem('nappy-inventory', JSON.stringify(inventory));
-  }, [inventory]);
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoadingAuth(false);
+    });
+    return () => unsub();
+  }, []);
 
-  const updateCount = (id: string, delta: number) => {
-    if ('vibrate' in navigator) {
-      if (delta === 1) {
-        navigator.vibrate(40); // Light tap for increment
-      } else if (delta < 0) {
-        navigator.vibrate([30, 50, 30]); // Double tap for decrement
-      } else if (delta > 1) {
-        navigator.vibrate(80); // Heavier tap for bulk add
-      }
+  useEffect(() => {
+    if (!user) {
+      setInventory([]);
+      return;
     }
+    const q = query(collection(db, 'inventory'), where('userId', '==', user.uid));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const items: NappyType[] = [];
+      snapshot.forEach(doc => items.push({ id: doc.id, ...doc.data() } as NappyType));
+      setInventory(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'inventory');
+    });
+    return () => unsub();
+  }, [user]);
 
-    setInventory(prev => prev.map(item => {
-      if (item.id === id) {
-        const newCount = Math.max(0, item.count + delta);
-        return { ...item, count: newCount };
-      }
-      return item;
-    }));
+  const signIn = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  const handleAddNew = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newName.trim()) return;
+  const updateCount = async (id: string, delta: number) => {
+    if ('vibrate' in navigator) {
+      if (delta === 1) navigator.vibrate(40);
+      else if (delta < 0) navigator.vibrate([30, 50, 30]);
+      else if (delta > 1) navigator.vibrate(80);
+    }
 
-    const newItem: NappyType = {
-      id: crypto.randomUUID(),
+    const item = inventory.find(i => i.id === id);
+    if (!item) return;
+    
+    // Optimistic UI update
+    const newCount = Math.max(0, item.count + delta);
+    setInventory(prev => prev.map(i => i.id === id ? { ...i, count: newCount } : i));
+
+    try {
+      await updateDoc(doc(db, 'inventory', id), {
+        count: newCount,
+        updatedAt: serverTimestamp()
+      });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `inventory/${id}`);
+      // Revert optimism
+      setInventory(prev => prev.map(i => i.id === id ? { ...i, count: item.count } : i));
+    }
+  };
+
+  const handleAddNew = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newName.trim() || !user) return;
+
+    const newId = crypto.randomUUID();
+    const newItem = {
+      userId: user.uid,
       name: newName.trim(),
       count: parseInt(newCount) || 0,
       boxQuantity: parseInt(newBoxQuantity) || 30,
       minThreshold: parseInt(newThreshold) || 0,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
     };
 
-    setInventory([...inventory, newItem]);
     setIsAdding(false);
-    
-    // Reset form
-    setNewName('');
-    setNewCount('0');
-    setNewBoxQuantity('30');
-    setNewThreshold('10');
+    setNewName(''); setNewCount('0'); setNewBoxQuantity('30'); setNewThreshold('10');
+
+    try {
+      await setDoc(doc(db, 'inventory', newId), newItem);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `inventory/${newId}`);
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (itemToDelete) {
-      setInventory(prev => prev.filter(item => item.id !== itemToDelete.id));
+      const id = itemToDelete.id;
       setItemToDelete(null);
+      try {
+        await deleteDoc(doc(db, 'inventory', id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `inventory/${id}`);
+      }
     }
   };
 
@@ -92,36 +144,26 @@ export default function App() {
     link.remove();
   };
 
-  const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!user) return;
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const text = event.target?.result as string;
       if (!text) return;
 
       const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-      if (lines.length <= 1) return; // Only header or empty
-
-      const newInventory = [...inventory];
+      if (lines.length <= 1) return; 
 
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i];
-        
-        let parts = [];
-        let current = '';
-        let inQuotes = false;
-        
+        let parts = []; let current = ''; let inQuotes = false;
         for (const char of line) {
-          if (char === '"') {
-            inQuotes = !inQuotes;
-          } else if (char === ',' && !inQuotes) {
-            parts.push(current);
-            current = '';
-          } else {
-            current += char;
-          }
+          if (char === '"') inQuotes = !inQuotes;
+          else if (char === ',' && !inQuotes) { parts.push(current); current = ''; }
+          else current += char;
         }
         parts.push(current);
 
@@ -132,33 +174,67 @@ export default function App() {
           const minThreshold = parseInt(parts[3], 10);
 
           if (name && !isNaN(count)) {
-            const existingIndex = newInventory.findIndex(item => item.name.toLowerCase() === name.toLowerCase());
-            if (existingIndex >= 0) {
-              newInventory[existingIndex] = {
-                ...newInventory[existingIndex],
-                count,
-                boxQuantity: !isNaN(boxQuantity) ? boxQuantity : newInventory[existingIndex].boxQuantity,
-                minThreshold: !isNaN(minThreshold) ? minThreshold : newInventory[existingIndex].minThreshold,
-              };
-            } else {
-              newInventory.push({
-                id: crypto.randomUUID(),
-                name,
-                count,
-                boxQuantity: !isNaN(boxQuantity) ? boxQuantity : 30,
-                minThreshold: !isNaN(minThreshold) ? minThreshold : 10,
-              });
+            const existingItem = inventory.find(i => i.name.toLowerCase() === name.toLowerCase());
+            try {
+              if (existingItem) {
+                await updateDoc(doc(db, 'inventory', existingItem.id), {
+                  count,
+                  boxQuantity: !isNaN(boxQuantity) ? boxQuantity : existingItem.boxQuantity,
+                  minThreshold: !isNaN(minThreshold) ? minThreshold : existingItem.minThreshold,
+                  updatedAt: serverTimestamp()
+                });
+              } else {
+                const newId = crypto.randomUUID();
+                await setDoc(doc(db, 'inventory', newId), {
+                  userId: user.uid,
+                  name,
+                  count,
+                  boxQuantity: !isNaN(boxQuantity) ? boxQuantity : 30,
+                  minThreshold: !isNaN(minThreshold) ? minThreshold : 10,
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp()
+                });
+              }
+            } catch (err) {
+              handleFirestoreError(err, OperationType.WRITE, 'inventory');
             }
           }
         }
       }
-      setInventory(newInventory);
     };
     reader.readAsText(file);
     e.target.value = '';
   };
 
   const totalPacks = inventory.reduce((sum, item) => sum + item.count, 0);
+
+  if (loadingAuth) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] text-neutral-100 flex items-center justify-center font-sans pb-32">
+        <div className="text-neutral-500 font-medium tracking-widest text-sm animate-pulse uppercase">Authenticating...</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] text-neutral-100 flex justify-center font-sans pb-32 select-none">
+        <div className="w-full max-w-md flex flex-col relative bg-black shadow-2xl p-6 justify-center items-center">
+          <div className="w-16 h-16 bg-neutral-900 rounded-2xl flex items-center justify-center mb-6 border border-neutral-800">
+            <PackagePlus size={32} className="text-white" />
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight mb-3">Inventory</h1>
+          <p className="text-neutral-400 text-center mb-10 text-sm">Sign in to track your items across devices securely.</p>
+          <button 
+            onClick={signIn}
+            className="w-full h-14 bg-white text-black font-black text-sm uppercase tracking-widest rounded-2xl shadow-lg active:scale-95 transition-transform"
+          >
+            Sign in with Google
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-neutral-100 flex justify-center font-sans pb-32 select-none">
@@ -167,9 +243,14 @@ export default function App() {
         <header className="pt-12 pb-4 px-6 bg-black border-b border-neutral-800">
           <div className="flex justify-between items-end mb-3">
             <h1 className="text-2xl font-bold tracking-tight">Inventory</h1>
-            <div className="text-right">
-              <div className="text-2xl font-black tabular-nums leading-none text-white">{totalPacks}</div>
-              <div className="text-[10px] uppercase text-neutral-500 tracking-widest mt-1">Total Packs</div>
+            <div className="text-right flex items-center justify-end gap-3">
+              <button onClick={() => signOut(auth)} className="w-8 h-8 rounded-full bg-neutral-900 flex items-center justify-center text-neutral-500 hover:text-white active:bg-neutral-800 transition-colors" aria-label="Sign out">
+                <LogOut size={14} />
+              </button>
+              <div>
+                <div className="text-2xl font-black tabular-nums leading-none text-white">{totalPacks}</div>
+                <div className="text-[10px] uppercase text-neutral-500 tracking-widest mt-1">Total Packs</div>
+              </div>
             </div>
           </div>
           <p className="text-neutral-400 text-sm">

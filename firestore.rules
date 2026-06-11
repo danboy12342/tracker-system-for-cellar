@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidInventoryItem(data) {
+      return data.keys().hasAll(['userId', 'name', 'count', 'boxQuantity', 'minThreshold', 'createdAt', 'updatedAt']) &&
+             data.keys().size() == 7 &&
+             data.userId == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.count is number && data.count >= 0 &&
+             data.boxQuantity is number && data.boxQuantity > 0 &&
+             data.minThreshold is number && data.minThreshold >= 0 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    match /inventory/{itemId} {
+      allow read: if isSignedIn() && existing().userId == request.auth.uid;
+      
+      allow create: if isSignedIn() &&
+                    isValidId(itemId) &&
+                    isValidInventoryItem(incoming()) &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+      
+      allow update: if isSignedIn() &&
+                    existing().userId == request.auth.uid &&
+                    isValidInventoryItem(incoming()) &&
+                    incoming().userId == existing().userId &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().updatedAt == request.time &&
+                    incoming().diff(existing()).affectedKeys().hasOnly(['name', 'count', 'boxQuantity', 'minThreshold', 'updatedAt']);
+                    
+      allow delete: if isSignedIn() && existing().userId == request.auth.uid;
+      
+      // Explicit list rule using resource.data
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+  }
+}

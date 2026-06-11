@@ -1,0 +1,41 @@
+{
+  "entities": {
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "An inventory item stored in Firestore",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "count": {
+          "type": "number"
+        },
+        "boxQuantity": {
+          "type": "number"
+        },
+        "minThreshold": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "number"
+        }
+      },
+      "required": ["userId", "name", "count", "boxQuantity", "minThreshold", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/inventory/{itemId}": {
+      "schema": {
+        "$ref": "#/entities/InventoryItem"
+      },
+      "description": "Global inventory collection scoped by userId"
+    }
+  }
+}

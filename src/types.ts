@@ -1,9 +1,12 @@
 export interface NappyType {
   id: string;
+  userId: string;
   name: string;
   count: number;
   minThreshold: number;
   boxQuantity: number;
+  createdAt: any; // Timestamp or number
+  updatedAt: any; // Timestamp or number
 }
 
 export interface InventoryHistoryLog {
