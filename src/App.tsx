@@ -64,8 +64,10 @@ export default function App() {
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      if (e.code !== 'auth/popup-closed-by-user') {
+        console.error(e);
+      }
     }
   };
 
